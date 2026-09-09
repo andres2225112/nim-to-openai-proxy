@@ -94,10 +94,7 @@ const DEFAULT_MODEL = 'google/gemma-4-31b-it';
 
 // Ordered by observed reliability/speed — an early failing model delays every fallback behind it.
 const FALLBACK_MODELS = [
-  'google/diffusiongemma-26b-a4b-it',
-  'google/gemma-4-31b-it',
-  'mistralai/mistral-nemotron',
-  'nvidia/nemotron-3-super-120b-a12b'
+  'moonshotai/kimi-k3'
 ];
 
 // ─── Middleware ─────────────────────────────────────────────────────────
@@ -251,6 +248,45 @@ function safeWrite(res, data) {
   return false;
 }
 
+// ─── Helper: Safe Error Body Extraction ──────────────────────────────────
+// When a request uses responseType: 'stream' (any client sending stream:
+// true — which is most of them), axios error responses come back as a
+// Readable stream in err.response.data, NOT parsed JSON. That stream holds a
+// live circular reference to its underlying TLSSocket/HTTPParser, so
+// JSON.stringify on it throws "Converting circular structure to JSON" and
+// silently eats the real NIM error message. This drains the stream safely
+// instead of stringifying it directly.
+function isStream(obj) {
+  return !!obj && typeof obj.pipe === 'function' && typeof obj.on === 'function';
+}
+
+async function extractErrorBody(err) {
+  const data = err?.response?.data;
+  if (!data) return null;
+
+  if (isStream(data)) {
+    try {
+      const chunks = [];
+      const text = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => resolve(''), 2000);
+        data.on('data', (c) => chunks.push(c));
+        data.on('end', () => { clearTimeout(timer); resolve(Buffer.concat(chunks).toString('utf8')); });
+        data.on('error', (e) => { clearTimeout(timer); reject(e); });
+      });
+      try {
+        return JSON.parse(text);
+      } catch {
+        return text || null;
+      }
+    } catch (readErr) {
+      return `[could not read stream error body: ${readErr.message}]`;
+    }
+  }
+
+  if (Buffer.isBuffer(data)) return data.toString('utf8');
+  return data;
+}
+
 // ─── Helper: Fallback Chain ──────────────────────────────────────────────
 
 // Per-model cooldown after a 403/429, in-memory (resets on restart, not shared across instances).
@@ -311,7 +347,8 @@ async function callWithFallback(baseRequest, models, enableThinking, clientReaso
       );
       if (DEBUG_MODE) {
         console.log(`[DEBUG] Full request body sent to ${model}:`, JSON.stringify(fullRequest));
-        console.log(`[DEBUG] Full upstream error response:`, JSON.stringify(err.response?.data || null));
+        const safeBody = await extractErrorBody(err);
+        console.log(`[DEBUG] Full upstream error response:`, typeof safeBody === 'string' ? safeBody : JSON.stringify(safeBody));
       }
 
       // Same key for every attempt: a 401 means every remaining model would fail identically.
