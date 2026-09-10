@@ -305,7 +305,29 @@ function setCooldown(model, ms) {
   modelCooldowns.set(model, Date.now() + ms);
 }
 
-async function callWithFallback(baseRequest, models, enableThinking, clientReasoningEffort, hasTools) {
+// ─── Request-rate visibility ────────────────────────────────────────────
+// Tracks every incoming client request so the logs can answer "how many
+// requests actually hit the proxy, and when" — useful for telling apart a
+// genuinely low NVIDIA rate limit from Janitor (or a client) silently
+// retrying/regenerating more than expected.
+
+let requestCounter = 0;
+const recentRequestTimestamps = []; // epoch ms, incoming requests only
+
+function recordIncomingRequest() {
+  const now = Date.now();
+  recentRequestTimestamps.push(now);
+  const cutoff = now - 5 * 60 * 1000; // bound memory to last 5 min
+  while (recentRequestTimestamps.length && recentRequestTimestamps[0] < cutoff) {
+    recentRequestTimestamps.shift();
+  }
+  return {
+    last10s: recentRequestTimestamps.filter(t => t > now - 10000).length,
+    last60s: recentRequestTimestamps.filter(t => t > now - 60000).length
+  };
+}
+
+async function callWithFallback(baseRequest, models, enableThinking, clientReasoningEffort, hasTools, requestId) {
   let lastError = null;
   const timeoutMs = resolveEffectiveThinking(enableThinking, clientReasoningEffort)
     ? REASONING_REQUEST_TIMEOUT_MS
@@ -315,9 +337,11 @@ async function callWithFallback(baseRequest, models, enableThinking, clientReaso
   const activeModels = models.filter(m => !isInCooldown(m));
   const attemptOrder = activeModels.length > 0 ? activeModels : models;
 
-  for (const model of attemptOrder) {
+  for (const [i, model] of attemptOrder.entries()) {
     const reasoningPayload = getReasoningPayload(model, enableThinking, clientReasoningEffort, hasTools);
     const fullRequest = { ...baseRequest, model, ...reasoningPayload };
+
+    console.log(`[REQUEST #${requestId}] → NIM attempt ${i + 1}/${attemptOrder.length}: ${model}`);
 
     if (DEBUG_MODE) {
       console.log(`[DEBUG] Attempting ${model} with reasoning payload:`, JSON.stringify(reasoningPayload), `(timeout: ${timeoutMs}ms)`);
@@ -336,13 +360,14 @@ async function callWithFallback(baseRequest, models, enableThinking, clientReaso
           timeout: timeoutMs
         }
       );
+      console.log(`[REQUEST #${requestId}] ✓ succeeded with ${model}`);
       return { response: res, model };
     } catch (err) {
       lastError = err;
       const status = err.response?.status;
 
       console.warn(
-        `[FALLBACK] Model failed: ${model}`,
+        `[REQUEST #${requestId}] [FALLBACK] Model failed: ${model}`,
         status,
         err.response?.data?.error?.message || err.message
       );
@@ -471,6 +496,16 @@ app.post('/v1/chat/completions', async (req, res) => {
   let streamEndedCleanly = false;
   let upstreamStream = null;
 
+  const requestId = ++requestCounter;
+  const { last10s, last60s } = recordIncomingRequest();
+  const clientIp = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress;
+
+  console.log(
+    `[REQUEST #${requestId}] IN from ${clientIp} — alias="${req.body?.model}" ` +
+    `stream=${!!req.body?.stream} messages=${req.body?.messages?.length ?? 0} ` +
+    `| rate: ${last10s} in last 10s, ${last60s} in last 60s`
+  );
+
   try {
     const { model, max_tokens, temperature, stream, reasoning_effort } = req.body;
 
@@ -499,11 +534,12 @@ app.post('/v1/chat/completions', async (req, res) => {
       modelChain,
       ENABLE_THINKING_MODE,
       reasoning_effort,
-      !!req.body.tools
+      !!req.body.tools,
+      requestId
     );
 
     upstreamStream = response.data;
-    console.log('[PROXY] Model used:', usedModel);
+    console.log(`[REQUEST #${requestId}] Model used:`, usedModel);
 
     const inlineReasoning = req.headers['x-reasoning-format'] === 'inline';
 
@@ -774,8 +810,8 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
   } catch (error) {
     const safeBody = await extractErrorBody(error);
-    console.error('[PROXY] Fatal error:', error.message);
-    console.error('[PROXY] NIM response:', typeof safeBody === 'string' ? safeBody : JSON.stringify(safeBody));
+    console.error(`[REQUEST #${requestId}] Fatal error:`, error.message);
+    console.error(`[REQUEST #${requestId}] NIM response:`, typeof safeBody === 'string' ? safeBody : JSON.stringify(safeBody));
 
     if (!res.headersSent) {
       // Express only sets Content-Type if unset; force JSON in case the
