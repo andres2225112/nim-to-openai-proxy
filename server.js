@@ -88,6 +88,7 @@ const MODEL_MAPPING = {
   'google-lighter': 'poolside/laguna-xs-2.1', // was google/gemma-3-4b-it
   'm3': 'minimaxai/minimax-m3',
   'kimi-k3': 'moonshotai/kimi-k3',
+  'glm-5.3': 'z-ai/glm-5.3',
 };
 
 // Used when an unrecognized alias is requested. Must point at a live model.
@@ -95,6 +96,7 @@ const DEFAULT_MODEL = 'google/gemma-4-31b-it';
 
 // Ordered by observed reliability/speed — an early failing model delays every fallback behind it.
 const FALLBACK_MODELS = [
+  'z-ai/glm-5.3',
   'moonshotai/kimi-k3'
 ];
 
