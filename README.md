@@ -48,15 +48,6 @@ Node.js 24+, a NVAPI/Nim API key, a deployment platform (though if you follow th
 | `google-lightest` | `meta/muse-glimmer-30b` | Coding & Agentic work | Fast | Unknown (to me) |
 | `m3` | `minimaxai/minimax-m3` | Experimental | Medium-High | Unknown (to me) |
 
-### Filter Guide
-
-| If your use-case involves... | Avoid | Use instead |
-|---|---|---|
-| Dark themes, violence, mature content | `gpt-4-flash`, `gpt-4-turbo` (They have high filters due to being based in China) | `mistral`, `gemini-pro`, `claude-3-opus` |
-| Fast responses needed | `gpt-4o`, `gpt-4-turbo` | `gemini-pro`, `mistral-turbo`, `gpt-3.5o` |
-| Long context / memory | Anything under 30B | `gpt-4-turbo`, `mistral`, `gpt-4` |
-| Testing / very fast replies | — | `google-lightest`, `gpt-3.5o` |
-| Coding / Long horizon work | — | `gpt-4-turbo`, `gpt-4o` |
 
 ### Fallback Chain
 
