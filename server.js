@@ -368,14 +368,24 @@ async function callWithFallback(baseRequest, models, enableThinking, clientReaso
       lastError = err;
       const status = err.response?.status;
 
+      // err.response.data is an unparsed stream when the request used
+      // responseType: 'stream' (any client sending stream: true), so
+      // err.response?.data?.error?.message is always undefined there and
+      // silently falls back to axios's generic "Request failed with status
+      // code 400". Drain it properly so the real NIM reason shows up.
+      const safeBody = await extractErrorBody(err);
+      const upstreamMessage =
+        (safeBody && typeof safeBody === 'object' && safeBody.error?.message) ||
+        (typeof safeBody === 'string' && safeBody.trim()) ||
+        err.message;
+
       console.warn(
         `[REQUEST #${requestId}] [FALLBACK] Model failed: ${model}`,
         status,
-        err.response?.data?.error?.message || err.message
+        upstreamMessage
       );
       if (DEBUG_MODE) {
         console.log(`[DEBUG] Full request body sent to ${model}:`, JSON.stringify(fullRequest));
-        const safeBody = await extractErrorBody(err);
         console.log(`[DEBUG] Full upstream error response:`, typeof safeBody === 'string' ? safeBody : JSON.stringify(safeBody));
       }
 
@@ -812,6 +822,14 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
   } catch (error) {
     const safeBody = await extractErrorBody(error);
+    // Prefer NIM's actual error message over axios's generic
+    // "Request failed with status code 400" so both the console and the
+    // client see the real reason (bad param, invalid model, etc).
+    const upstreamMessage =
+      (safeBody && typeof safeBody === 'object' && safeBody.error?.message) ||
+      (typeof safeBody === 'string' && safeBody.trim()) ||
+      error.message;
+
     console.error(`[REQUEST #${requestId}] Fatal error:`, error.message);
     console.error(`[REQUEST #${requestId}] NIM response:`, typeof safeBody === 'string' ? safeBody : JSON.stringify(safeBody));
 
@@ -821,7 +839,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       res.set('Content-Type', 'application/json');
       res.status(error.response?.status || 500).json({
         error: {
-          message: error.message,
+          message: upstreamMessage,
           type: 'invalid_request_error',
           code: error.response?.status || 500
         }
@@ -829,7 +847,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     } else if (!res.writableEnded) {
       safeWrite(res, `data: ${JSON.stringify({
         error: {
-          message: error.message,
+          message: upstreamMessage,
           type: 'proxy_error'
         }
       })}\n\n`);
